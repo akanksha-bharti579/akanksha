@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "akanksha"
+version = "0.1.0"
+description = "Personal AI Second Brain & Research Assistant with local RAG and semantic search"
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [
+    { name = "Akanksha Bharti" }
+]
+keywords = ["rag", "ai", "second-brain", "llm", "semantic-search", "machine-learning", "research-assistant"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "numpy>=1.24.0",
+    "scipy>=1.10.0",
+    "scikit-learn>=1.2.0",
+    "pypdf>=4.0.0",
+    "rich>=13.0.0",
+    "starlette>=0.30.0",
+    "uvicorn>=0.23.0",
+    "pydantic>=2.0.0",
+    "httpx>=0.24.0",
+    "python-multipart>=0.0.9",
+]
+
+[project.optional-dependencies]
+all = [
+    "chromadb>=0.4.0",
+    "sentence-transformers>=2.2.0"
+]
+dev = [
+    "pytest>=7.0.0"
+]
+
+[project.scripts]
+akanksha = "akanksha.cli:main"
+second-brain = "akanksha.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["akanksha*"]

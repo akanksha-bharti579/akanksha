@@ -1,0 +1,203 @@
+"""
+Multi-provider LLM Synthesis Layer: Offline Extractive Synthesizer, Gemini, OpenAI, and Ollama.
+"""
+
+from typing import Protocol, runtime_checkable, Optional
+import os
+import re
+import httpx
+
+
+@runtime_checkable
+class BaseLLM(Protocol):
+    """Protocol for LLM generation backends."""
+    def generate(self, prompt: str, system_prompt: Optional[str] = None) -> str:
+        ...
+
+
+class OfflineSynthesizer:
+    """
+    Zero-dependency, offline intelligent synthesizer.
+    Extracts key answers, definitions, and salient points directly from the retrieved context.
+    Works seamlessly without any API keys, GPUs, or internet connection.
+    """
+
+    def generate(self, prompt: str, system_prompt: Optional[str] = None) -> str:
+        # Extract query and context from standard RAG prompt format
+        context_match = re.search(r"=== CONTEXT ===\s*(.*?)\s*=== USER QUESTION ===", prompt, re.DOTALL)
+        query_match = re.search(r"=== USER QUESTION ===\s*(.*)", prompt, re.DOTALL)
+
+        if not context_match or not query_match:
+            # Fallback for arbitrary prompts
+            return "Based on the provided context, the documents have been analyzed. Here are the relevant findings:\n\n" + prompt[:500]
+
+        context_text = context_match.group(1).strip()
+        query = query_match.group(1).strip()
+
+        # Split context into passages
+        passages = [p.strip() for p in context_text.split("\n\n---\n\n") if p.strip()]
+        if not passages:
+            return "No matching passages were found in your indexed documents for this query."
+
+        # Tokenize query for salience matching
+        query_words = set(re.findall(r"\w+", query.lower()))
+        stop_words = {"what", "is", "the", "in", "a", "an", "and", "or", "to", "for", "of", "how", "why", "are", "can", "you", "tell", "me", "about"}
+        salient_query_words = query_words - stop_words
+
+        extracted_findings: list[str] = []
+
+        for p_idx, passage in enumerate(passages):
+            lines = [l.strip() for l in passage.split("\n") if l.strip()]
+            header = lines[0] if lines else f"[Passage {p_idx+1}]"
+            body_lines = lines[1:] if len(lines) > 1 else lines
+
+            # Score sentences in body
+            sentences = re.split(r"(?<=[.!?])\s+", " ".join(body_lines))
+            scored_sentences = []
+            for s in sentences:
+                s_words = set(re.findall(r"\w+", s.lower()))
+                overlap = len(salient_query_words & s_words)
+                if overlap > 0:
+                    scored_sentences.append((overlap, s.strip()))
+
+            scored_sentences.sort(key=lambda x: x[0], reverse=True)
+            top_sents = [s for _, s in scored_sentences[:3]]
+
+            if top_sents:
+                excerpt = " ".join(top_sents)
+                extracted_findings.append(f"**From {header}:**\n> {excerpt}")
+            elif body_lines:
+                # Fallback to leading sentences
+                excerpt = " ".join(body_lines[:2])
+                extracted_findings.append(f"**From {header}:**\n> {excerpt}")
+
+        response_parts = [
+            f"### Analysis for: *\"{query}\"*\n",
+            "Here is the synthesized information retrieved directly from your personal knowledge base:\n",
+        ]
+
+        for finding in extracted_findings:
+            response_parts.append(finding)
+            response_parts.append("")
+
+        response_parts.append(
+            "> 💡 *Tip: Connect an LLM provider (like free Google Gemini or local Ollama) in settings for full generative answers.*"
+        )
+
+        return "\n".join(response_parts)
+
+
+class GeminiProvider:
+    """Google Gemini LLM synthesis."""
+
+    def __init__(self, api_key: Optional[str] = None, model: str = "gemini-1.5-flash"):
+        self.api_key = api_key or os.getenv("GEMINI_API_KEY")
+        self.model = model
+        if not self.api_key:
+            raise ValueError("GEMINI_API_KEY is not set.")
+
+    def generate(self, prompt: str, system_prompt: Optional[str] = None) -> str:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent?key={self.api_key}"
+        
+        contents = []
+        if system_prompt:
+            contents.append({"role": "user", "parts": [{"text": f"System Instructions: {system_prompt}"}]})
+            contents.append({"role": "model", "parts": [{"text": "Understood. I will strictly adhere to these instructions."}]})
+        contents.append({"role": "user", "parts": [{"text": prompt}]})
+
+        try:
+            with httpx.Client(timeout=45.0) as client:
+                res = client.post(url, json={"contents": contents})
+                res.raise_for_status()
+                data = res.json()
+                candidates = data.get("candidates", [])
+                if candidates and candidates[0].get("content", {}).get("parts"):
+                    return candidates[0]["content"]["parts"][0]["text"].strip()
+                return "No response generated by Gemini."
+        except Exception as e:
+            return f"Error contacting Gemini API: {str(e)}"
+
+
+class OpenAIProvider:
+    """OpenAI or OpenAI-compatible (Groq, DeepSeek, Local) LLM."""
+
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        base_url: str = "https://api.openai.com/v1",
+        model: str = "gpt-4o-mini",
+    ):
+        self.api_key = api_key or os.getenv("OPENAI_API_KEY")
+        self.base_url = base_url.rstrip("/")
+        self.model = model
+        if not self.api_key:
+            raise ValueError("OPENAI_API_KEY is not set.")
+
+    def generate(self, prompt: str, system_prompt: Optional[str] = None) -> str:
+        url = f"{self.base_url}/chat/completions"
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+
+        headers = {"Authorization": f"Bearer {self.api_key}"}
+        try:
+            with httpx.Client(timeout=45.0) as client:
+                res = client.post(
+                    url,
+                    headers=headers,
+                    json={"model": self.model, "messages": messages, "temperature": 0.3},
+                )
+                res.raise_for_status()
+                data = res.json()
+                return data["choices"][0]["message"]["content"].strip()
+        except Exception as e:
+            return f"Error contacting OpenAI endpoint: {str(e)}"
+
+
+class OllamaProvider:
+    """Local Ollama instance LLM."""
+
+    def __init__(self, base_url: str = "http://localhost:11434", model: str = "llama3"):
+        self.base_url = base_url.rstrip("/")
+        self.model = model
+
+    def generate(self, prompt: str, system_prompt: Optional[str] = None) -> str:
+        url = f"{self.base_url}/api/generate"
+        payload = {
+            "model": self.model,
+            "prompt": prompt,
+            "system": system_prompt or "",
+            "stream": False,
+        }
+        try:
+            with httpx.Client(timeout=60.0) as client:
+                res = client.post(url, json=payload)
+                res.raise_for_status()
+                data = res.json()
+                return data.get("response", "").strip()
+        except Exception as e:
+            return f"Error contacting Ollama at {self.base_url}: {str(e)}. Make sure Ollama is running (`ollama serve`)."
+
+
+def get_llm_backend(provider_name: str = "offline", **kwargs) -> BaseLLM:
+    """Factory to get the requested LLM with safe fallback to offline synthesizer."""
+    name = (provider_name or "").lower().strip()
+
+    if name == "gemini":
+        try:
+            return GeminiProvider(**kwargs)
+        except Exception:
+            pass
+    elif name in ["openai", "groq"]:
+        try:
+            return OpenAIProvider(**kwargs)
+        except Exception:
+            pass
+    elif name == "ollama":
+        try:
+            return OllamaProvider(**kwargs)
+        except Exception:
+            pass
+
+    return OfflineSynthesizer()

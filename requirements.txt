@@ -1,0 +1,15 @@
+# Core Dependencies
+numpy>=1.24.0
+scipy>=1.10.0
+scikit-learn>=1.2.0
+pypdf>=4.0.0
+rich>=13.0.0
+starlette>=0.30.0
+uvicorn>=0.23.0
+pydantic>=2.0.0
+httpx>=0.24.0
+python-multipart>=0.0.9
+
+# Optional AI / Embeddings enhancements
+# chromadb>=0.4.0
+# sentence-transformers>=2.2.0
